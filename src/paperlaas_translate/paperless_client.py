@@ -60,6 +60,22 @@ class PaperlessClient:
         )
         return document
 
+    async def download_document(self, base_url: str, document_id: int) -> bytes:
+        logger.info("downloading paperless document", document_id=document_id, base_url=base_url)
+        response = await self._request(
+            "GET",
+            base_url,
+            f"/api/documents/{document_id}/download/",
+            headers={"Accept": "application/pdf, application/octet-stream;q=0.9, */*;q=0.8"},
+        )
+        logger.info(
+            "downloaded paperless document",
+            document_id=document_id,
+            content_type=response.headers.get("content-type"),
+            size_bytes=len(response.content),
+        )
+        return response.content
+
     async def find_tag_id(self, base_url: str, tag_name: str) -> int:
         response = await self._request_json(
             "GET",
@@ -199,13 +215,16 @@ class PaperlessClient:
     ) -> httpx.Response:
         url = _build_url(base_url, path)
         started = time.monotonic()
+        extra_headers = kwargs.pop("headers", {})
+        headers = {
+            "Authorization": f"Token {self._token}",
+            "Accept": "application/json",
+            **extra_headers,
+        }
         response = await self._http_client.request(
             method,
             url,
-            headers={
-                "Authorization": f"Token {self._token}",
-                "Accept": "application/json",
-            },
+            headers=headers,
             **kwargs,
         )
         duration_ms = round((time.monotonic() - started) * 1000, 2)

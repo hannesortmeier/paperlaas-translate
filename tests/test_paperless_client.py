@@ -43,3 +43,34 @@ def test_upload_document_uses_async_safe_multipart_request() -> None:
     assert captured["body"].count('name="tags"') == 2
     assert '"2": "TestValue"' in captured["body"]
     assert "Translated title" in captured["body"]
+
+
+def test_download_document_requests_archived_file() -> None:
+    captured: dict[str, str] = {}
+
+    async def run_test() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["accept"] = request.headers["accept"]
+            captured["path"] = request.url.path
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/pdf"},
+                content=b"%PDF-1.7 translated source",
+            )
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = PaperlessClient(
+                http_client,
+                token="paperless-token",
+                task_poll_seconds=0.1,
+                task_timeout_seconds=1.0,
+            )
+            content = await client.download_document("https://paperless.example.com", 42)
+
+            assert content == b"%PDF-1.7 translated source"
+
+    asyncio.run(run_test())
+
+    assert captured["accept"] == "application/pdf, application/octet-stream;q=0.9, */*;q=0.8"
+    assert captured["path"] == "/api/documents/42/download/"

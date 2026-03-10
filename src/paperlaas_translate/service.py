@@ -6,7 +6,7 @@ import time
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from .logging_config import get_logger
-from .models import PaperlessDocument, TargetLanguage, TranslatedArtifact
+from .models import PaperlessDocument, TargetLanguage, TranslatedArtifact, TranslationSource
 from .paperless_client import PaperlessClient
 from .translators import OfficeAndTextTranslator, PdfTranslator
 from .utils import (
@@ -14,8 +14,10 @@ from .utils import (
     custom_fields_to_payload,
     derive_paperless_base_url,
     extract_document_id,
+    is_email,
     is_pdf,
     is_supported_mime_type,
+    make_pdf_filename,
     make_translated_filename,
     make_translated_title,
     parse_translation_tags,
@@ -60,15 +62,20 @@ class TranslationService:
         )
         try:
             document = await self._paperless_client.fetch_document(paperless_base_url, document_id)
-            if not is_supported_mime_type(document.mime_type):
-                raise UnsupportedDocumentTypeError(
-                    f"Unsupported MIME type for document {document_id}: {document.mime_type}"
-                )
-
             translation_tags = parse_translation_tags(document.tags)
             if not translation_tags:
                 logger.info("document has no translation tags; skipping")
                 return
+
+            translation_source = await self._resolve_translation_source(
+                paperless_base_url,
+                document,
+                original_file_bytes,
+            )
+            if not is_supported_mime_type(translation_source.mime_type):
+                raise UnsupportedDocumentTypeError(
+                    f"Unsupported MIME type for document {document_id}: {document.mime_type}"
+                )
 
             translated_tag_id = await self._paperless_client.find_tag_id(
                 paperless_base_url,
@@ -82,7 +89,8 @@ class TranslationService:
             requested_languages = [language.value for language in translation_tags]
             logger.info(
                 "loaded translation inputs",
-                mime_type=document.mime_type,
+                mime_type=translation_source.mime_type,
+                original_mime_type=document.mime_type,
                 requested_languages=requested_languages,
                 tag_count=len(document.tags),
             )
@@ -98,7 +106,7 @@ class TranslationService:
                 try:
                     artifact = await self._translate_document(
                         document,
-                        original_file_bytes,
+                        translation_source,
                         target_language,
                     )
                     custom_fields = custom_fields_to_payload(
@@ -158,34 +166,66 @@ class TranslationService:
     async def _translate_document(
         self,
         document: PaperlessDocument,
-        original_file: bytes,
+        translation_source: TranslationSource,
         target_language: TargetLanguage,
     ) -> TranslatedArtifact:
         logger.info(
             "translating document",
-            mime_type=document.mime_type,
-            original_filename=document.original_filename,
+            mime_type=translation_source.mime_type,
+            original_mime_type=document.mime_type,
+            original_filename=translation_source.filename,
         )
-        if is_pdf(document.mime_type):
-            translated_bytes = await asyncio.to_thread(
+        if is_pdf(translation_source.mime_type):
+            translated_bytes = await self._run_blocking(
                 self._pdf_translator.translate,
-                document.original_filename,
-                original_file,
+                translation_source.filename,
+                translation_source.content,
                 target_language,
             )
             output_mime_type = "application/pdf"
         else:
-            translated_bytes = await asyncio.to_thread(
+            translated_bytes = await self._run_blocking(
                 self._office_translator.translate,
-                document.mime_type,
-                original_file,
+                translation_source.mime_type,
+                translation_source.content,
                 target_language,
             )
-            output_mime_type = document.mime_type
+            output_mime_type = translation_source.mime_type
 
         return TranslatedArtifact(
             content=translated_bytes,
-            filename=make_translated_filename(document.original_filename, target_language),
+            filename=make_translated_filename(translation_source.filename, target_language),
             mime_type=output_mime_type,
             title=make_translated_title(document.title, target_language),
         )
+
+    async def _resolve_translation_source(
+        self,
+        paperless_base_url: str,
+        document: PaperlessDocument,
+        original_file_bytes: bytes,
+    ) -> TranslationSource:
+        if not is_email(document.mime_type):
+            return TranslationSource(
+                content=original_file_bytes,
+                filename=document.original_filename,
+                mime_type=document.mime_type,
+            )
+
+        logger.info(
+            "using archived pdf as translation source",
+            original_mime_type=document.mime_type,
+            original_filename=document.original_filename,
+        )
+        archived_pdf_bytes = await self._paperless_client.download_document(
+            paperless_base_url,
+            document.id,
+        )
+        return TranslationSource(
+            content=archived_pdf_bytes,
+            filename=make_pdf_filename(document.original_filename),
+            mime_type="application/pdf",
+        )
+
+    async def _run_blocking(self, func, *args):
+        return await asyncio.to_thread(func, *args)

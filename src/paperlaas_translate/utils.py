@@ -19,6 +19,10 @@ _WORD_MIME_TYPES = {
     "application/vnd.oasis.opendocument.text",
 }
 
+_EMAIL_MIME_TYPES = {
+    "message/rfc822",
+}
+
 _SUPPORTED_MIME_TYPES = {
     "application/pdf",
     "text/plain",
@@ -59,6 +63,10 @@ def is_supported_mime_type(mime_type: str) -> bool:
     return mime_type in _SUPPORTED_MIME_TYPES
 
 
+def is_email(mime_type: str) -> bool:
+    return mime_type in _EMAIL_MIME_TYPES
+
+
 def is_pdf(mime_type: str) -> bool:
     return mime_type == "application/pdf"
 
@@ -84,6 +92,15 @@ def make_translated_filename(original_filename: str, target_language: TargetLang
     suffix = path.suffix or _default_suffix_for_language_output(path.name)
     stem = path.stem or "document"
     return f"{stem}.{target_language.iso_code}.translated{suffix}"
+
+
+def make_pdf_filename(filename: str) -> str:
+    path = Path(filename)
+    if path.suffix.lower() == ".pdf":
+        return path.name
+    if path.suffix:
+        return f"{path.stem}.pdf"
+    return f"{path.name}.pdf"
 
 
 def make_translated_title(original_title: str, target_language: TargetLanguage) -> str:

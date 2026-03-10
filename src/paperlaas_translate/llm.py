@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Sequence
+from typing import Any
 
 from openai import OpenAI
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -38,25 +40,58 @@ class OpenAISegmentTranslator:
         if not segments:
             return []
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=0,
-            messages=[
+        system_prompt = (
+            "You are a document translation engine. Translate each array item independently "
+            f"into {target_language.label}. Preserve meaning, numbering, URLs, placeholders, "
+            "and line breaks. Preserve placeholder tokens like [[PAPERLAAS_...]] exactly "
+            "and do not translate, remove, or reorder them. Return only a JSON array with "
+            "the same number of items."
+        )
+        user_payload = json.dumps(list(segments), ensure_ascii=False)
+        request_payload = {
+            "model": self._model,
+            "temperature": 0,
+            "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a document translation engine. Translate each array item independently "
-                        f"into {target_language.label}. Preserve meaning, numbering, URLs, placeholders, "
-                        "and line breaks. Preserve placeholder tokens like [[PAPERLAAS_...]] exactly "
-                        "and do not translate, remove, or reorder them. Return only a JSON array with "
-                        "the same number of items."
-                    ),
+                    "content": system_prompt,
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(list(segments), ensure_ascii=False),
+                    "content": user_payload,
                 },
             ],
+        }
+        request_fields = {
+            "batch_size": len(segments),
+            "input_char_count": sum(len(segment) for segment in segments),
+            "target_language": target_language.value,
+            "model": self._model,
+        }
+        started = time.monotonic()
+        logger.info("sending llm translation request", **request_fields)
+        logger.debug(
+            "llm translation request payload",
+            **request_fields,
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+        )
+        try:
+            response = self._client.chat.completions.create(**request_payload)
+        except Exception:
+            logger.exception(
+                "llm translation request failed",
+                duration_ms=round((time.monotonic() - started) * 1000, 2),
+                **request_fields,
+            )
+            raise
+
+        usage_fields = _extract_usage_fields(response)
+        logger.info(
+            "received llm translation response",
+            duration_ms=round((time.monotonic() - started) * 1000, 2),
+            **request_fields,
+            **usage_fields,
         )
 
         content = response.choices[0].message.content or ""
@@ -80,6 +115,37 @@ class OpenAISegmentTranslator:
             model=self._model,
         )
         return translated_segments
+
+
+def _extract_usage_fields(response: Any) -> dict[str, object]:
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if usage is None:
+        return {"token_usage_available": False}
+
+    prompt_tokens = _usage_value(usage, "prompt_tokens")
+    completion_tokens = _usage_value(usage, "completion_tokens")
+    total_tokens = _usage_value(usage, "total_tokens")
+    usage_fields: dict[str, object] = {"token_usage_available": True}
+    if prompt_tokens is not None:
+        usage_fields["prompt_tokens"] = prompt_tokens
+        usage_fields["request_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        usage_fields["completion_tokens"] = completion_tokens
+        usage_fields["response_tokens"] = completion_tokens
+    if total_tokens is not None:
+        usage_fields["total_tokens"] = total_tokens
+    return usage_fields
+
+
+def _usage_value(usage: Any, key: str) -> int | None:
+    value = getattr(usage, key, None)
+    if value is None and isinstance(usage, dict):
+        value = usage.get(key)
+    if value is None:
+        return None
+    return int(value)
 
 
 def _parse_json_array(raw_content: str) -> list[str]:

@@ -7,6 +7,7 @@ Standalone FastAPI webhook service that receives Paperless-ngx webhooks, transla
 - `application/pdf` via `pdf2zh_next`
 - `application/vnd.openxmlformats-officedocument.wordprocessingml.document` via `python-docx` + LLM translation
 - `application/vnd.oasis.opendocument.text` via headless LibreOffice conversion to/from `.docx`
+- `message/rfc822` by downloading the Paperless archived file from `/api/documents/{id}/download/` and translating that PDF
 - `text/plain` via LLM translation
 
 Legacy Word `.doc` files (`application/msword`) are detected but intentionally rejected unless you later add an external converter.
@@ -88,7 +89,7 @@ Expected form-data field:
 - `url`: Paperless document URL such as `https://paperless.example.com/documents/2048/`
 - `file`: original uploaded document from the Paperless webhook
 
-The uploaded file is required and is used as the translation source.
+The uploaded file is required. For most supported types it is used as the translation source. For `message/rfc822`, the service downloads the Paperless archived file and translates that PDF instead.
 
 ## Logging
 
@@ -98,6 +99,8 @@ Logs are emitted as plain text to stdout. Each job includes:
 - document id
 - MIME type
 - requested target languages
+- per-batch LLM request start, response timing, and token usage when the API returns it
+- in `DEBUG`, the full LLM prompt payload sent for each batch
 - per-language translation and upload status
 - original tag update result
 

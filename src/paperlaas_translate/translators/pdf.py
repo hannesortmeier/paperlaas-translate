@@ -62,11 +62,12 @@ class PdfTranslator:
                 "--openai-compatible-base-url", self._openai_base_url,
                 "--openai-compatible-api-key", self._openai_api_key,
                 "--output", str(output_dir),
-                "--save-auto-extracted-glossary",
                 "--no-dual",
                 "--watermark-output-mode", self._watermark_output_mode,
                 "--disable-rich-text-translate",
                 "--skip-clean",
+                "--skip-scanned-detection",
+                "--no-auto-extract-glossary",
                 ]
             if self._source_language:
                 command.extend(["-li", self._source_language])

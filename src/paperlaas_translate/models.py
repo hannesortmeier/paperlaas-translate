@@ -46,6 +46,13 @@ class PaperlessDocument:
     created: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class TranslationSource:
+    content: bytes
+    filename: str
+    mime_type: str
+
+
 @dataclass(slots=True)
 class TranslatedArtifact:
     content: bytes
